@@ -1,256 +1,185 @@
-import { Tldraw, toRichText } from 'tldraw'
-import 'tldraw/tldraw.css'
 import { invoke } from '@tauri-apps/api/core'
 import { useRef } from 'react'
+import { Tldraw, toRichText } from 'tldraw'
+import 'tldraw/tldraw.css'
+
+type PersistedNode = {
+  id: string
+  type: string
+  x: number
+  y: number
+  content: string
+}
+
+type ShapeRecord = {
+  id: string
+  typeName: string
+  type: string
+  x: number
+  y: number
+  props?: Record<string, unknown>
+}
+
+const ALLOWED_TYPES = new Set(['geo', 'text', 'note'])
+const SHAPE_PREFIX = 'shape:'
+
+function ensureShapeId(id: string) {
+  return id.startsWith(SHAPE_PREFIX) ? id : `${SHAPE_PREFIX}${id}`
+}
+
+function toStorageId(id: string) {
+  return id.startsWith(SHAPE_PREFIX) ? id.slice(SHAPE_PREFIX.length) : id
+}
+
+function isPersistableShape(record: unknown): record is ShapeRecord {
+  if (!record || typeof record !== 'object') return false
+  const candidate = record as ShapeRecord
+  return candidate.typeName === 'shape' && ALLOWED_TYPES.has(candidate.type)
+}
+
+function richTextToPlainText(richText: unknown) {
+  if (!richText) return ''
+  if (typeof richText === 'string') return richText
+  if (typeof richText !== 'object') return ''
+
+  const root = richText as { content?: unknown[] }
+  if (!Array.isArray(root.content)) return ''
+
+  return root.content
+    .map((block) => {
+      if (!block || typeof block !== 'object') return ''
+      const paragraph = block as { type?: string; content?: unknown[] }
+      if (paragraph.type !== 'paragraph' || !Array.isArray(paragraph.content)) return ''
+      return paragraph.content
+        .map((part) => {
+          if (!part || typeof part !== 'object') return ''
+          const textNode = part as { text?: unknown }
+          return typeof textNode.text === 'string' ? textNode.text : ''
+        })
+        .join('')
+    })
+    .filter(Boolean)
+    .join('\n')
+}
+
+function shapeToNode(record: ShapeRecord): PersistedNode {
+  const richText = record.props?.richText
+  const fallbackText = record.props?.text
+  const content =
+    record.type === 'geo'
+      ? `[${String(record.props?.geo ?? 'rectangle')}]`
+      : richTextToPlainText(richText) || (typeof fallbackText === 'string' ? fallbackText : '')
+
+  return {
+    id: toStorageId(record.id),
+    type: record.type,
+    x: record.x,
+    y: record.y,
+    content,
+  }
+}
+
+function nodeToShape(node: PersistedNode) {
+  const common = {
+    id: ensureShapeId(node.id),
+    x: Number.isFinite(node.x) ? node.x : 0,
+    y: Number.isFinite(node.y) ? node.y : 0,
+  }
+
+  switch (node.type) {
+    case 'geo':
+      return {
+        ...common,
+        type: 'geo',
+        props: {
+          geo: 'rectangle',
+          w: 200,
+          h: 100,
+        },
+      }
+    case 'text':
+      return {
+        ...common,
+        type: 'text',
+        props: {
+          richText: toRichText(node.content ?? ''),
+        },
+      }
+    case 'note':
+      return {
+        ...common,
+        type: 'note',
+        props: {
+          richText: toRichText(node.content ?? ''),
+        },
+      }
+    default:
+      return null
+  }
+}
 
 function App() {
-  const isLoadingRef = useRef(false);
-  const hasLoadedRef = useRef(false);
+  const isLoadingRef = useRef(false)
+  const hasLoadedRef = useRef(false)
 
   const handleMount = (editor: any) => {
-    console.log('🚀 Tldraw 已挂载');
-    
-    const loadFromDB = async () => {
-      isLoadingRef.current = true;
-      console.log('📂 开始从数据库加载...');
-      
+    if (isLoadingRef.current || hasLoadedRef.current) return
+
+    const loadFromDb = async () => {
+      isLoadingRef.current = true
       try {
-        const nodes: any[] = await invoke('get_nodes');
-        console.log(`📦 数据库返回 ${nodes.length} 个节点:`, nodes);
-        
-        let successCount = 0;
-        nodes.forEach((node) => {
-          let shapeConfig: any = null;
-          
-          switch (node.type) {
-            case 'geo':
-              shapeConfig = {
-                id: node.id,
-                type: 'geo',
-                x: node.x,
-                y: node.y,
-                props: {
-                  geo: 'rectangle',
-                  w: 200,
-                  h: 100
-                }
-              };
-              break;
-              
-            case 'text':
-              shapeConfig = {
-                id: node.id,
-                type: 'text',
-                x: node.x,
-                y: node.y,
-                props: {
-                  richText: toRichText(node.content || ""),
-                  scale: 1
-                }
-              };
-              break;
-              
-            case 'note':
-              shapeConfig = {
-                id: node.id,
-                type: 'note',
-                x: node.x,
-                y: node.y,
-                props: {
-                  richText: toRichText(node.content || ""),
-                  color: 'yellow',
-                  scale: 1
-                }
-              };
-              break;
-              
-            default:
-              console.warn(`⚠️ 忽略未知类型: ${node.type}`);
-              return;
+        const nodes = await invoke<PersistedNode[]>('get_nodes')
+        for (const node of nodes) {
+          const shape = nodeToShape(node)
+          if (!shape) continue
+          try {
+            editor.createShape(shape)
+          } catch (error) {
+            console.error('Failed to create shape from DB node', node, error)
           }
-          
-          if (shapeConfig) {
-            try {
-              editor.createShape(shapeConfig);
-              successCount++;
-              console.log(`✅ 已创建 ${node.type} [ID: ${node.id.substring(0, 20)}...]`);
-            } catch (e) {
-              console.error(`❌ 创建失败:`, e);
-            }
-          }
-        });
-        
-        console.log(`✅ 加载完成: ${successCount}/${nodes.length} 个节点成功创建`);
-      } catch (e) {
-        console.error("❌ 数据库读取失败:", e);
+        }
+      } catch (error) {
+        console.error('Failed to load nodes from DB', error)
       } finally {
-        setTimeout(() => {
-          isLoadingRef.current = false;
-          hasLoadedRef.current = true;
-          console.log('🔓 保存功能已启用');
-        }, 500);
+        isLoadingRef.current = false
+        hasLoadedRef.current = true
       }
-    };
+    }
 
-    loadFromDB();
+    loadFromDb()
 
-    // ========== 保存逻辑 ==========
-    let saveTimeout: NodeJS.Timeout | null = null;
-    let changeCounter = 0;
-    
+    let saveTimeout: ReturnType<typeof setTimeout> | undefined
+
     editor.store.listen((entry: any) => {
-      changeCounter++;
-      
-      if (isLoadingRef.current) {
-        console.log('⏸️ 跳过保存：正在加载中');
-        return;
-      }
-      
-      if (!hasLoadedRef.current) {
-        console.log('⏸️ 跳过保存：加载锁定期');
-        return;
-      }
-      
-      const { updated, added } = entry.changes;
-      const allChanges = { ...added, ...updated };
-      
-      // ✅ 显示所有变化的内容
-      console.log(`📝 检测到变化 #${changeCounter}`, {
-        总变化数: Object.keys(allChanges).length,
-        详细内容: Object.values(allChanges).map((r: any) => ({
-          typeName: r.typeName,
-          type: r.type,S
-          id: r.id?.substring(0, 20)
-        }))
-      });
-      
-      if (saveTimeout) {
-        clearTimeout(saveTimeout);
-      }
-      
+      if (isLoadingRef.current || !hasLoadedRef.current) return
+
+      if (saveTimeout) clearTimeout(saveTimeout)
+
       saveTimeout = setTimeout(async () => {
-        console.log('💾 开始保存流程...');
-        console.log('📋 本次变化详情:', allChanges);
-        
-        let savedCount = 0;
-        let skippedCount = 0;
-        
-        for (const record of Object.values(allChanges) as any[]) {
-          console.log(`🔍 检查记录:`, {
-            typeName: record.typeName,
-            type: record.type,
-            id: record.id
-          });
-          
-          // ✅关键 检查为什么跳过
-          if (record.typeName !== 'shape') {
-            console.log(`❌ 跳过原因: typeName 不是 'shape'，而是 '${record.typeName}'`);
-            skippedCount++;
-            continue;
-          }
-          
-          const allowedTypes = ['geo', 'text', 'note'];
-          
-          if (!allowedTypes.includes(record.type)) {
-            console.log(`❌ 跳过原因: type '${record.type}' 不在白名单 [${allowedTypes.join(', ')}]`);
-            skippedCount++;
-            continue;
-          }
-          
-          console.log(`✅ 通过检查，准备保存 ${record.type}`);
-          
-          // 提取内容
-          let content = "";
-          
-          try {
-            if (record.type === 'geo') {
-              content = `[${record.props?.geo || 'rectangle'}]`;
-            } else if (record.type === 'text' || record.type === 'note') {
-              const richText = record.props?.richText;
-              
-              if (richText) {
-                if (typeof richText === 'object' && richText.content) {
-                  try {
-                    content = richText.content
-                      .map((node: any) => {
-                        if (node.type === 'paragraph' && node.content) {
-                          return node.content
-                            .map((textNode: any) => textNode.text || '')
-                            .join('');
-                        }
-                        return '';
-                      })
-                      .filter(Boolean)
-                      .join('\n');
-                  } catch (err) {
-                    console.warn('richText 解析失败', err);
-                    content = JSON.stringify(richText);
-                  }
-                } else if (typeof richText === 'string') {
-                  content = richText;
-                }
-              }
-              
-              if (!content && record.props?.text) {
-                content = record.props.text;
-              }
-            }
-            
-            console.log(`📝 提取的内容: "${content}"`);
-          } catch (err) {
-            console.error('❌ 内容提取失败:', err);
-            content = "[提取失败]";
-          }
+        const addedShapes = Object.values(entry.changes.added ?? {}).filter(isPersistableShape)
+        const updatedShapes = Object.values(entry.changes.updated ?? {})
+          .map((pair: any) => (Array.isArray(pair) ? pair[1] : undefined))
+          .filter(isPersistableShape)
+        const removedShapes = Object.values(entry.changes.removed ?? {}).filter(isPersistableShape)
 
-          const nodeData = {
-            id: record.id,
-            type: record.type,
-            x: record.x,
-            y: record.y,
-            content: content
-          };
+        const saveCalls = [...addedShapes, ...updatedShapes].map((shape) =>
+          invoke('save_node', { node: shapeToNode(shape) })
+        )
+        const deleteCalls = removedShapes.map((shape) =>
+          invoke('delete_node', { id: toStorageId(shape.id) })
+        )
 
-          console.log(`📤 调用 Rust 保存:`, nodeData);
-
-          try {
-            await invoke('save_node', { node: nodeData });
-            savedCount++;
-            console.log(`✅✅✅ 保存成功！ [${savedCount}] ${record.type}`);
-          } catch (err) {
-            console.error(`❌ Rust 调用失败:`, err);
-          }
+        try {
+          await Promise.all([...saveCalls, ...deleteCalls])
+        } catch (error) {
+          console.error('Failed to sync shape changes', error)
         }
-        
-        console.log(`📊 统计: 保存 ${savedCount} 个, 跳过 ${skippedCount} 个`);
-        
-        if (savedCount === 0) {
-          console.warn('⚠️ 没有节点被保存！');
-        } else {
-          console.log(`🎉 成功保存 ${savedCount} 个节点`);
-        }
-      }, 300);
-    });
-  };
+      }, 250)
+    })
+  }
 
   return (
     <div style={{ position: 'fixed', inset: 0 }}>
-      <div style={{
-        position: 'absolute', 
-        top: 12, 
-        left: '50%', 
-        transform: 'translateX(-50%)',
-        zIndex: 1000, 
-        backgroundColor: '#ff5722', 
-        color: '#fff',
-        padding: '10px 24px', 
-        borderRadius: '8px', 
-        fontSize: '15px', 
-        fontWeight: '700',
-        boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
-      }}>
-        🔍 调试版 F12 查看为什么没保存
-      </div>
-      
       <Tldraw onMount={handleMount} />
     </div>
   )

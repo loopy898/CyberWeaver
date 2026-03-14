@@ -1,129 +1,82 @@
 import { invoke } from '@tauri-apps/api/core'
-import { useRef } from 'react'
-import { Tldraw, toRichText } from 'tldraw'
+import { useEffect, useRef, useState } from 'react'
+import { Tldraw } from 'tldraw'
 import 'tldraw/tldraw.css'
-
-type PersistedNode = {
-  id: string
-  type: string
-  x: number
-  y: number
-  content: string
-}
-
-type ShapeRecord = {
-  id: string
-  typeName: string
-  type: string
-  x: number
-  y: number
-  props?: Record<string, unknown>
-}
-
-const ALLOWED_TYPES = new Set(['geo', 'text', 'note'])
-const SHAPE_PREFIX = 'shape:'
-
-function ensureShapeId(id: string) {
-  return id.startsWith(SHAPE_PREFIX) ? id : `${SHAPE_PREFIX}${id}`
-}
-
-function toStorageId(id: string) {
-  return id.startsWith(SHAPE_PREFIX) ? id.slice(SHAPE_PREFIX.length) : id
-}
-
-function isPersistableShape(record: unknown): record is ShapeRecord {
-  if (!record || typeof record !== 'object') return false
-  const candidate = record as ShapeRecord
-  return candidate.typeName === 'shape' && ALLOWED_TYPES.has(candidate.type)
-}
-
-function richTextToPlainText(richText: unknown) {
-  if (!richText) return ''
-  if (typeof richText === 'string') return richText
-  if (typeof richText !== 'object') return ''
-
-  const root = richText as { content?: unknown[] }
-  if (!Array.isArray(root.content)) return ''
-
-  return root.content
-    .map((block) => {
-      if (!block || typeof block !== 'object') return ''
-      const paragraph = block as { type?: string; content?: unknown[] }
-      if (paragraph.type !== 'paragraph' || !Array.isArray(paragraph.content)) return ''
-      return paragraph.content
-        .map((part) => {
-          if (!part || typeof part !== 'object') return ''
-          const textNode = part as { text?: unknown }
-          return typeof textNode.text === 'string' ? textNode.text : ''
-        })
-        .join('')
-    })
-    .filter(Boolean)
-    .join('\n')
-}
-
-function shapeToNode(record: ShapeRecord): PersistedNode {
-  const richText = record.props?.richText
-  const fallbackText = record.props?.text
-  const content =
-    record.type === 'geo'
-      ? `[${String(record.props?.geo ?? 'rectangle')}]`
-      : richTextToPlainText(richText) || (typeof fallbackText === 'string' ? fallbackText : '')
-
-  return {
-    id: toStorageId(record.id),
-    type: record.type,
-    x: record.x,
-    y: record.y,
-    content,
-  }
-}
-
-function nodeToShape(node: PersistedNode) {
-  const common = {
-    id: ensureShapeId(node.id),
-    x: Number.isFinite(node.x) ? node.x : 0,
-    y: Number.isFinite(node.y) ? node.y : 0,
-  }
-
-  switch (node.type) {
-    case 'geo':
-      return {
-        ...common,
-        type: 'geo',
-        props: {
-          geo: 'rectangle',
-          w: 200,
-          h: 100,
-        },
-      }
-    case 'text':
-      return {
-        ...common,
-        type: 'text',
-        props: {
-          richText: toRichText(node.content ?? ''),
-        },
-      }
-    case 'note':
-      return {
-        ...common,
-        type: 'note',
-        props: {
-          richText: toRichText(node.content ?? ''),
-        },
-      }
-    default:
-      return null
-  }
-}
+import { isPersistableShape, nodeToShape, shapeToNode, toStorageId } from './canvasNodes.ts'
+import { type PersistedNode } from './graphNodes.ts'
+import { createDebugCreateNodeCommand, parseGraphUpdateMessage } from './ws.ts'
 
 function App() {
   const isLoadingRef = useRef(false)
   const hasLoadedRef = useRef(false)
+  const editorRef = useRef<any>(null)
+  const socketRef = useRef<WebSocket | null>(null)
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [socketState, setSocketState] = useState<'connecting' | 'open' | 'closed'>('connecting')
+
+  useEffect(() => {
+    return () => {
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
+      socketRef.current?.close()
+    }
+  }, [])
+
+  const connectWebSocket = () => {
+    if (socketRef.current && socketRef.current.readyState <= WebSocket.OPEN) return
+
+    setSocketState('connecting')
+    const socket = new WebSocket('ws://127.0.0.1:3000/ws')
+    socketRef.current = socket
+
+    socket.onopen = () => {
+      setSocketState('open')
+    }
+
+    socket.onmessage = (event) => {
+      const editor = editorRef.current
+      if (!editor) return
+
+      const update = parseGraphUpdateMessage(String(event.data))
+      for (const node of [...update.addedNodes, ...update.updatedNodes]) {
+        const shape = nodeToShape(node)
+        if (!shape) continue
+
+        const existingShape = editor.getShape(shape.id)
+        try {
+          if (existingShape) {
+            editor.updateShape(shape)
+          } else {
+            editor.createShape(shape)
+          }
+        } catch (error) {
+          console.error('Failed to apply WebSocket graph update', node, error)
+        }
+      }
+    }
+
+    socket.onerror = (error) => {
+      console.error('WebSocket connection error', error)
+    }
+
+    socket.onclose = () => {
+      setSocketState('closed')
+      socketRef.current = null
+      reconnectTimerRef.current = setTimeout(() => {
+        connectWebSocket()
+      }, 1500)
+    }
+  }
+
+  const sendDebugCreateNode = () => {
+    const socket = socketRef.current
+    if (!socket || socket.readyState !== WebSocket.OPEN) return
+    socket.send(createDebugCreateNodeCommand())
+  }
 
   const handleMount = (editor: any) => {
     if (isLoadingRef.current || hasLoadedRef.current) return
+    editorRef.current = editor
+    connectWebSocket()
 
     const loadFromDb = async () => {
       isLoadingRef.current = true
@@ -180,6 +133,28 @@ function App() {
 
   return (
     <div style={{ position: 'fixed', inset: 0 }}>
+      <div
+        style={{
+          position: 'absolute',
+          top: 16,
+          right: 16,
+          zIndex: 1000,
+          display: 'flex',
+          gap: 12,
+          alignItems: 'center',
+          padding: '10px 12px',
+          background: 'rgba(15, 23, 42, 0.85)',
+          color: '#f8fafc',
+          borderRadius: 12,
+          boxShadow: '0 10px 30px rgba(15, 23, 42, 0.22)',
+          backdropFilter: 'blur(8px)',
+        }}
+      >
+        <span style={{ fontSize: 12 }}>WS: {socketState}</span>
+        <button type="button" onClick={sendDebugCreateNode} disabled={socketState !== 'open'}>
+          推送测试节点
+        </button>
+      </div>
       <Tldraw onMount={handleMount} />
     </div>
   )

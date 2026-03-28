@@ -52,6 +52,7 @@ export function richTextToPlainText(richText: unknown) {
 }
 
 export function shapeToNode(record: ShapeRecord): PersistedNode {
+  const storageId = toStorageId(record.id).replace(/^viz:/, '')
   const richText = record.props?.richText
   const fallbackText = record.props?.text
   const content =
@@ -60,7 +61,7 @@ export function shapeToNode(record: ShapeRecord): PersistedNode {
       : richTextToPlainText(richText) || (typeof fallbackText === 'string' ? fallbackText : '')
 
   return {
-    id: toStorageId(record.id),
+    id: storageId,
     type: record.type,
     x: record.x,
     y: record.y,

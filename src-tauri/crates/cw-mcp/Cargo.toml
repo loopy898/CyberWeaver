@@ -1,0 +1,18 @@
+[package]
+name = "cw-mcp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chrono = "0.4"
+rmcp = { version = ">=0.5", features = ["server", "transport-io"] }
+schemars = "1"
+sea-orm = { version = "1.1.19", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri_app_lib = { package = "cyberweaver", path = "../.." }
+thiserror = "2"
+tokio = { version = "1.49.0", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1", features = ["v4", "v5"] }

@@ -7,6 +7,7 @@ use tauri_app_lib::{
     ai::agent::ForensicsAgent,
     db::repositories::{node_repo::NodeRepo, relation_repo::RelationRepo},
     error::AppError,
+    plugins::registry::ToolRegistry,
     services::llm::{
         client::LlmClient,
         extractor::{extract_entities, extract_relations, ExtractedEntity},
@@ -129,7 +130,7 @@ async fn agent_analyze_impl(
         &params.api_key,
         &params.model,
     );
-    let agent = ForensicsAgent::new(config);
+    let agent = ForensicsAgent::new(config, ToolRegistry::new().all_manifests());
     let plan = agent
         .analyze(&node_summaries, &relation_summaries)
         .await?;

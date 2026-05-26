@@ -26,6 +26,11 @@ pub enum AgentAction {
         query_type: String,
         query_value: String,
     },
+    UseTool {
+        tool_name: String,
+        params: serde_json::Value,
+        auto_merge: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

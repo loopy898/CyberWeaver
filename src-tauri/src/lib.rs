@@ -10,6 +10,7 @@ pub mod db;
 pub mod error;
 pub mod graph;
 pub mod models;
+pub mod plugins;
 pub mod services;
 pub mod state;
 pub mod ws;
@@ -17,6 +18,7 @@ pub mod ws;
 use db::connection::init_db;
 use db::migrations::run_migrations;
 use error::AppError;
+use plugins::registry::ToolRegistry;
 use state::AppState;
 
 /// Bootstrap the Tauri application, Axum server, and all background tasks.
@@ -39,7 +41,11 @@ pub fn run() -> tauri::Result<()> {
                 Ok::<_, Box<dyn std::error::Error>>(db)
             })?;
 
-            let app_state = AppState::new(db);
+            let mut tool_registry = ToolRegistry::new();
+            for tool in cw_plugins_builtin::builtin_tools() {
+                tool_registry.register_builtin(tool);
+            }
+            let app_state = AppState::new(db, tool_registry);
 
             // Spawn the Axum WebSocket broadcast server as a background task.
             let ws_tx = app_state.ws_broadcast.clone();

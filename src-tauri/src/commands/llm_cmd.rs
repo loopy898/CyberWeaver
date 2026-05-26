@@ -126,7 +126,7 @@ pub async fn agent_analyze(
         return Err("LLM is not configured".to_string());
     }
 
-    let agent = ForensicsAgent::new(config);
+    let agent = ForensicsAgent::new(config, state.tool_registry.all_manifests());
     agent
         .analyze(&node_summaries, &relation_summaries)
         .await

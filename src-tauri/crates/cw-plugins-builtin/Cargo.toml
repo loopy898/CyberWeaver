@@ -1,0 +1,8 @@
+[package]
+name = "cw-plugins-builtin"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cw-plugin-sdk = { path = "../cw-plugin-sdk" }
+serde_json = "1"

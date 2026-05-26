@@ -3,10 +3,14 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
 
+use crate::plugins::registry::ToolRegistry;
+
 pub struct AppState {
     pub db: Arc<DatabaseConnection>,
 
     pub ws_broadcast: broadcast::Sender<String>,
+
+    pub tool_registry: Arc<ToolRegistry>,
 
     pub llm_config: RwLock<LlmConfig>,
 }
@@ -31,11 +35,12 @@ impl Default for LlmConfig {
 }
 
 impl AppState {
-    pub fn new(db: DatabaseConnection) -> Self {
+    pub fn new(db: DatabaseConnection, tool_registry: ToolRegistry) -> Self {
         let (tx, _) = broadcast::channel::<String>(64);
         Self {
             db: Arc::new(db),
             ws_broadcast: tx,
+            tool_registry: Arc::new(tool_registry),
             llm_config: RwLock::new(LlmConfig::default()),
         }
     }

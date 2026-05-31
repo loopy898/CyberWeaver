@@ -4,4 +4,4 @@ function App() {
   return <CyberCanvas />
 }
 
-export default App
+export default App;

@@ -170,3 +170,92 @@ pub fn run_mobile() {
         eprintln!("failed to run mobile application: {error}");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn create_test_db() -> DatabaseConnection {
+        let db = Database::connect("sqlite::memory:")
+            .await
+            .expect("failed to connect sqlite");
+
+        init_schema(&db).await.expect("failed to init schema");
+        db
+    }
+
+    #[tokio::test]
+    async fn upsert_and_get_nodes_roundtrip() {
+        let db = create_test_db().await;
+
+        upsert_nodes_internal(
+            &db,
+            vec![NodePayload {
+                id: "artifact-1".to_owned(),
+                node_type: "text".to_owned(),
+                x: 12.0,
+                y: 34.0,
+                content: "IOC discovered".to_owned(),
+                width: Some(200.0),
+                height: None,
+            }],
+        )
+        .await
+        .expect("upsert should succeed");
+
+        let rows = list_nodes_internal(&db)
+            .await
+            .expect("query should succeed");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "shape:artifact-1");
+        assert_eq!(rows[0].node_type, "text");
+        assert_eq!(rows[0].content, "IOC discovered");
+        assert_eq!(rows[0].width, Some(200.0));
+    }
+
+    #[tokio::test]
+    async fn delete_nodes_removes_rows() {
+        let db = create_test_db().await;
+
+        upsert_nodes_internal(
+            &db,
+            vec![NodePayload {
+                id: "shape:artifact-2".to_owned(),
+                node_type: "note".to_owned(),
+                x: 0.0,
+                y: 0.0,
+                content: "temporary".to_owned(),
+                width: None,
+                height: None,
+            }],
+        )
+        .await
+        .expect("upsert should succeed");
+
+        delete_nodes_internal(&db, vec!["artifact-2".to_owned()])
+            .await
+            .expect("delete should succeed");
+
+        let rows = list_nodes_internal(&db)
+            .await
+            .expect("query should succeed");
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn validate_payload_rejects_unknown_shape_types() {
+        let payload = NodePayload {
+            id: "shape:x".to_owned(),
+            node_type: "draw".to_owned(),
+            x: 0.0,
+            y: 0.0,
+            content: String::new(),
+            width: None,
+            height: None,
+        };
+
+        let result = validate_node_payload(&payload);
+        assert!(result.is_err());
+    }
+}
